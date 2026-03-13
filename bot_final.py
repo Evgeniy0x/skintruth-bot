@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     ReplyKeyboardMarkup, KeyboardButton, BotCommand
@@ -34,6 +36,7 @@ OPENROUTER_API_KEY = os.environ.get(
     "OPENROUTER_API_KEY",
     "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"
 )
+PORT = int(os.environ.get("PORT", 10000))
 
 # Бесплатные модели OpenRouter
 AI_MODEL_TEXT = "meta-llama/llama-3.3-70b-instruct:free"      # 70B — умный для текста
@@ -820,6 +823,28 @@ async def post_init(app):
     logger.info("Команды бота установлены")
 
 
+# ═══════════════ HEALTH CHECK HTTP SERVER ═══════════════
+
+class HealthHandler(BaseHTTPRequestHandler):
+    """Простой HTTP-сервер для Render health check."""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        users, analyses = get_stats()
+        self.wfile.write(f"SkinTruth Bot v{BOT_VERSION} | Users: {users} | Analyses: {analyses}".encode())
+
+    def log_message(self, format, *args):
+        pass  # Без спама в логи
+
+
+def start_health_server():
+    """Запуск HTTP-сервера в фоне для Render."""
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    logger.info(f"🌐 Health-сервер на порту {PORT}")
+    server.serve_forever()
+
+
 # ═══════════════ ЗАПУСК ═══════════════
 
 def main():
@@ -832,6 +857,10 @@ def main():
 
     # Инициализация БД
     init_db()
+
+    # Health check HTTP-сервер (для Render free tier)
+    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread.start()
 
     # Сборка бота
     app = (
