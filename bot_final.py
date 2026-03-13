@@ -32,7 +32,7 @@ from telegram.constants import ParseMode, ChatAction
 BOT_TOKEN = "8770083271:AAFP1-5WXuhdLPCBHu81XyxzAhPbVG_Jd8s"
 OPENROUTER_API_KEY = os.environ.get(
     "OPENROUTER_API_KEY",
-    "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"
+    "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"
 )
 
 # Бесплатные модели OpenRouter
