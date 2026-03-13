@@ -1,9 +1,9 @@
 services:
-  - type: worker
+  - type: web
     name: skintruth-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python bot_final.py
     envVars:
       - key: OPENROUTER_API_KEY
-        value: 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
+        sync: false
