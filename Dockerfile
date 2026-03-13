@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY bot_final.py .
+COPY ingredients_db.py .
+COPY price_calculator.py .
+
+CMD ["python", "bot_final.py"]
