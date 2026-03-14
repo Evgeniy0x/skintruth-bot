@@ -35,10 +35,23 @@ BOT_TOKEN = "8770083271:AAFP1-5WXuhdLPCBHu81XyxzAhPbVG_Jd8s"
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 PORT = int(os.environ.get("PORT", 10000))
 
-# Бесплатные модели OpenRouter
-AI_MODEL_TEXT = "meta-llama/llama-3.3-70b-instruct:free"      # 70B — умный для текста
-AI_MODEL_VISION = "google/gemma-3-27b-it:free"                 # 27B — с Vision для фото
-AI_MODEL_FALLBACK = "mistralai/mistral-small-3.1-24b-instruct:free"  # запасной
+# Бесплатные модели OpenRouter (ротация для обхода rate-limit)
+AI_MODELS_TEXT = [
+    "meta-llama/llama-3.3-70b-instruct:free",           # 70B — умный для текста
+    "nvidia/nemotron-3-super-120b-a12b:free",            # 120B — мощная NVIDIA
+    "nousresearch/hermes-3-llama-3.1-405b:free",         # 405B — самая мощная
+    "qwen/qwen3-next-80b-a3b-instruct:free",             # 80B — Qwen3
+    "mistralai/mistral-small-3.1-24b-instruct:free",     # 24B — быстрая Mistral
+    "openai/gpt-oss-120b:free",                          # 120B — OpenAI open source
+    "stepfun/step-3.5-flash:free",                       # StepFun быстрая
+    "z-ai/glm-4.5-air:free",                             # GLM 4.5
+]
+AI_MODELS_VISION = [
+    "google/gemma-3-27b-it:free",                        # 27B — с Vision для фото
+    "nvidia/nemotron-nano-12b-v2-vl:free",               # 12B — NVIDIA Vision
+]
+# Универсальный маршрутизатор — сам выберет рабочую бесплатную модель
+AI_MODEL_ROUTER = "openrouter/free"
 
 BOT_VERSION = "2.0"
 MAX_ANALYSES_FREE = 50  # бесплатных анализов в день на юзера
@@ -264,11 +277,11 @@ def get_skin_context(user_id):
 # ═══════════════ OPENROUTER API ═══════════════
 
 async def call_openrouter(messages, model=None, timeout=90):
-    """Универсальный вызов OpenRouter API."""
+    """Универсальный вызов OpenRouter API с retry."""
     if not OPENROUTER_API_KEY:
         return None
 
-    model = model or AI_MODEL_TEXT
+    model = model or AI_MODELS_TEXT[0]
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -290,19 +303,26 @@ async def call_openrouter(messages, model=None, timeout=90):
 
             if response.status_code == 200:
                 data = response.json()
-                content = data["choices"][0]["message"]["content"]
-                logger.info(f"AI ответ ({model}): {len(content)} символов")
-                return content
+                if "choices" in data and data["choices"]:
+                    content = data["choices"][0]["message"]["content"]
+                    logger.info(f"✅ AI ответ ({model}): {len(content)} символов")
+                    return content
+                else:
+                    logger.warning(f"⚠️ OpenRouter [{model}] пустой ответ: {str(data)[:200]}")
+                    return None
+            elif response.status_code == 429:
+                logger.warning(f"⚠️ Rate limit [{model}] — попробуем другую модель")
+                return None
             else:
-                logger.error(f"OpenRouter [{model}] {response.status_code}: {response.text[:200]}")
+                logger.error(f"❌ OpenRouter [{model}] {response.status_code}: {response.text[:200]}")
                 return None
     except Exception as e:
-        logger.error(f"OpenRouter [{model}] ошибка: {e}")
+        logger.error(f"❌ OpenRouter [{model}] ошибка: {e}")
         return None
 
 
 async def ai_analyze_text(text, user_id):
-    """AI-анализ текстового состава."""
+    """AI-анализ текстового состава с ротацией моделей."""
     skin_ctx = get_skin_context(user_id)
     prompt = SYSTEM_PROMPT.replace("{SKIN_CONTEXT}", skin_ctx)
 
@@ -311,18 +331,32 @@ async def ai_analyze_text(text, user_id):
         {"role": "user", "content": f"Проанализируй состав:\n\n{text}"}
     ]
 
-    # Пробуем основную модель
-    result = await call_openrouter(messages, AI_MODEL_TEXT)
+    # Пробуем модели по очереди
+    for model in AI_MODELS_TEXT:
+        result = await call_openrouter(messages, model)
+        if result:
+            return result
+        await asyncio.sleep(1)  # Пауза между попытками
+
+    # Последний шанс — универсальный роутер
+    logger.info("🔄 Все модели заняты, пробуем openrouter/free...")
+    result = await call_openrouter(messages, AI_MODEL_ROUTER)
     if result:
         return result
 
-    # Фоллбэк
-    result = await call_openrouter(messages, AI_MODEL_FALLBACK)
-    return result
+    # Retry через 5 сек — может освободиться
+    logger.info("⏳ Ждём 5 сек и пробуем ещё раз...")
+    await asyncio.sleep(5)
+    for model in AI_MODELS_TEXT[:3]:
+        result = await call_openrouter(messages, model)
+        if result:
+            return result
+
+    return None
 
 
 async def ai_analyze_photo(image_bytes, user_id):
-    """AI-анализ фото через Vision."""
+    """AI-анализ фото через Vision с ротацией."""
     skin_ctx = get_skin_context(user_id)
     prompt = SYSTEM_PROMPT_PHOTO.replace("{SKIN_CONTEXT}", skin_ctx)
     b64 = base64.b64encode(image_bytes).decode('utf-8')
@@ -335,8 +369,26 @@ async def ai_analyze_photo(image_bytes, user_id):
         ]}
     ]
 
-    result = await call_openrouter(messages, AI_MODEL_VISION, timeout=120)
-    return result
+    # Пробуем Vision-модели
+    for model in AI_MODELS_VISION:
+        result = await call_openrouter(messages, model, timeout=120)
+        if result:
+            return result
+        await asyncio.sleep(1)
+
+    # Fallback — роутер
+    result = await call_openrouter(messages, AI_MODEL_ROUTER, timeout=120)
+    if result:
+        return result
+
+    # Retry
+    await asyncio.sleep(5)
+    for model in AI_MODELS_VISION:
+        result = await call_openrouter(messages, model, timeout=120)
+        if result:
+            return result
+
+    return None
 
 
 # ═══════════════ КЛАВИАТУРЫ ═══════════════
