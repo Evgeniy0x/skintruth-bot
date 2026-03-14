@@ -18,6 +18,7 @@ from pathlib import Path
 
 import httpx
 import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -872,10 +873,12 @@ async def post_init(app):
     logger.info("Команды бота установлены")
 
 
-# ═══════════════ HEALTH CHECK HTTP SERVER ═══════════════
+# ═══════════════ HEALTH CHECK + KEEP-ALIVE ═══════════════
+
+RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://skintruth-bot.onrender.com")
 
 class HealthHandler(BaseHTTPRequestHandler):
-    """Простой HTTP-сервер для Render health check."""
+    """HTTP-сервер для Render health check."""
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
@@ -894,13 +897,25 @@ def start_health_server():
     server.serve_forever()
 
 
+def keep_alive():
+    """Пингует сам себя каждые 10 минут, чтобы Render не усыпил сервис."""
+    import urllib.request
+    while True:
+        time.sleep(600)  # 10 минут
+        try:
+            urllib.request.urlopen(RENDER_URL, timeout=30)
+            logger.info("💓 Keep-alive ping OK")
+        except Exception as e:
+            logger.warning(f"💓 Keep-alive ping failed: {e}")
+
+
 # ═══════════════ ЗАПУСК ═══════════════
 
 def main():
     logger.info("=" * 50)
     logger.info(f"🔬 SkinTruth v{BOT_VERSION} запускается...")
-    logger.info(f"AI текст: {AI_MODEL_TEXT}")
-    logger.info(f"AI фото:  {AI_MODEL_VISION}")
+    logger.info(f"AI моделей текст: {len(AI_MODELS_TEXT)}")
+    logger.info(f"AI моделей фото:  {len(AI_MODELS_VISION)}")
     logger.info(f"API ключ: {'✅ есть' if OPENROUTER_API_KEY else '❌ нет'}")
     logger.info("=" * 50)
 
@@ -910,6 +925,11 @@ def main():
     # Health check HTTP-сервер (для Render free tier)
     health_thread = threading.Thread(target=start_health_server, daemon=True)
     health_thread.start()
+
+    # Keep-alive — пингуем сами себя каждые 10 мин, чтобы не засыпать
+    keepalive_thread = threading.Thread(target=keep_alive, daemon=True)
+    keepalive_thread.start()
+    logger.info("💓 Keep-alive запущен (пинг каждые 10 мин)")
 
     # Сборка бота
     app = (
@@ -931,7 +951,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     logger.info("✅ Бот готов! Запуск polling...")
-    app.run_polling(drop_pending_updates=False)
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
